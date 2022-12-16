@@ -1,0 +1,502 @@
+---
+title: "Association Between Sleep Duration and Cognitive Decline Among Older Adults"
+author: "Mia LaBrier"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Load packages and open libraries
+```{r}
+pacman::p_load(odds.n.ends, blorr, lmtest, car,  broom, tidyverse, jtools, readr, haven, labelled, ggplot2, broom, table1, DiagrammeR) 
+```
+
+# Import BRFSS 2020 data
+```{r}
+setwd("/Users/mialabrier/Documents/advanced_data")
+BRFSS2020 <- read_xpt("LLCP2020.XPT ")
+```
+
+# Clean data
+## Get Information about imported data
+```{r}
+# Check variable types in dataframe
+str(BRFSS2020)
+
+# Get head of dataframe
+head(BRFSS2020)
+```
+
+## Create new dataframe with selected variables for analyese
+```{r}
+# Select variables for analyses
+BRFSS_2 <- BRFSS2020 %>%
+  select(c("SLEPTIM1", "CIMEMLOS", "_AGEG5YR", "_SEX", "_IMPRACE"))
+
+# Get head of new dataframe with selected variables
+head(BRFSS_2)
+
+# Rename selected variables
+BRFSS_2 <- BRFSS_2 %>%
+  rename("sleep_time" = "SLEPTIM1", "cognitive_decline" = "CIMEMLOS", "age" = "_AGEG5YR", "sex" = "_SEX", "race" = "_IMPRACE")
+
+# Get head of new dataframe with renamed variables
+head(BRFSS_2)
+```
+
+## Get information about new dataframe and variables selected for analyses
+```{r}
+# Check variable types for selected variables
+str(BRFSS_2)
+
+# Get an idea of values and NAs for selected variables
+summary(BRFSS_2)
+##NOTE: cognitive decline has 334,120 missing values because it was only asked to participants ≥45 and not asked across all states
+
+# Remove attributes from dataframe
+var_label(BRFSS_2) <- NULL
+```
+
+## Recode Variables for analyses
+### Cognitive decline (outcome variable) as binary
+```{r}
+# Cognitive decline is indicated by a participants response to "During the past 12 months, have you experienced confusion or memory loss that is happening more often or is getting worse?" (Yes, No, Don't Know, Refused, Not asked/Missing)
+
+# Create table for cognitive decline before recoding
+table(BRFSS_2$cognitive_decline, useNA = "always")
+
+# Recode cognitive decline as a binary variable, with 0 = No and 1 = Yes
+BRFSS_2 <- BRFSS_2 %>%
+  mutate(cognitive_decline_binary = case_when(cognitive_decline == 2 ~ 0,
+                                              cognitive_decline == 1 ~ 1),
+      cognitive_decline_binary = factor(cognitive_decline_binary, levels=c(0:1), labels=c("No cognitive decline", "Cognitive decline"))) 
+
+# Create table to make sure the recode worked as expected
+table(BRFSS_2$cognitive_decline, BRFSS_2$cognitive_decline_binary, useNA="always")
+```
+
+### Sleep time (exposure of interest) as categorical
+```{r}
+#Sleep time is indicated by a participants response to "On average, how many hours of sleep do you get in a 24-hour period?" (Numeric value, Don't know, Refused, Missing)
+
+# Create table for sleep time before recoding
+table(BRFSS_2$sleep_time)
+##NOTE, 77 = "Don't Know", 99 = "Refused" - These responses will not be coded into categorical levels, rather, they will count as NAs. Therefore the highest categorical level will be set from 10 hours ≤ 24 hours
+
+# Recode sleep time as a categorical variable
+BRFSS_2 <- BRFSS_2 %>%
+  mutate(sleep_time_cat = case_when(sleep_time == 7 ~ 0,
+                                    sleep_time <= 4 ~ 1,
+                                    sleep_time == 5 ~ 2,
+                                    sleep_time == 6 ~ 3,
+                                    sleep_time == 8 ~ 4,
+                                    sleep_time >= 9 & sleep_time <= 24 ~ 5),
+         sleep_time_cat = factor(sleep_time_cat, 0:5, c("7 (reference)", "≤4", "5", "6", "8", "≥9")))
+
+# Create table to make sure the recode worked as expected
+summary(BRFSS_2$sleep_time_cat)
+```
+
+### Race (covariate) as catagorical
+```{r}
+# Create table for race before recoding
+summary(BRFSS_2$race)
+
+# Recode race as a categorical variable, with 45-64 = 1 and 65-≥80 = 2
+BRFSS_2 <- BRFSS_2 %>%
+  mutate(race_cat = case_when(race == 1 ~ 1,
+                                    race == 2 ~ 2,
+                                    race == 3 ~ 4,
+                                    race == 4 ~ 4,
+                                    race == 5 ~ 3,
+                                    race == 6 ~ 4),
+         race_cat = factor(race_cat, 1:4, c("White", "Black", "Hispanic", "Other")))
+
+# Create table to make sure the recode worked as expected
+summary(BRFSS_2$race_cat)
+```
+
+### Recode age as binary
+```{r}
+# Create table for age before recoding
+summary(BRFSS_2$age)
+
+# Recode age as binary 
+BRFSS_2 <- BRFSS_2 %>%
+  mutate(age_cat = case_when(age == 6 ~ 1,
+                             age == 7 ~ 1,
+                             age == 8 ~ 1,
+                             age == 9 ~ 1,
+                             age == 10 ~ 2,
+                             age == 11 ~ 2,
+                             age == 12 ~ 2,
+                             age == 13 ~ 2),
+         age_cat = factor(age_cat, 1:2, c("45-64", "65-≥80")))
+
+# checking to make sure recode worked
+summary(BRFSS_2$age_cat)
+table(BRFSS_2$age_cat)
+```
+
+### Recode sex as binary
+```{r}
+# Create table for sex before recoding
+table(BRFSS_2$sex)
+
+# Recode sex as binary, with Male = 0 and Female = 1
+BRFSS_2 <- BRFSS_2 %>%
+  mutate(sex_cat = case_when(sex == 1 ~ 0,
+                             sex == 2 ~ 1),
+         sex_cat = factor(sex_cat, 0:1, c("Male", "Female")))
+
+# checking to make sure recode worked
+summary(BRFSS_2$sex_cat)
+```
+
+## Drop NAs (complete case analysis)
+```{r}
+#Drop NAs, participants with any missing values in BRFSS_2 will be excluded from analyses)
+BRFSS_ex <- BRFSS_2 %>%
+  drop_na()
+
+100 - nrow(BRFSS_ex)/nrow(BRFSS_2) * 100
+##NOTE: This is high, however, most of these missing values come from the cognitive decline variable, which was only collected for adults of 45 in specific states
+```
+
+# Assumptions and analyses
+##Check number of cases in each exposure/outcome category
+```{r}
+#Create a table to determine the number of cases in each exposure outcome
+table(BRFSS_ex$cognitive_decline_binary, BRFSS_ex$sleep_time_cat, BRFSS_ex$race_cat, BRFSS_ex$age_cat, BRFSS_ex$sex_cat)
+##NOTE: The assumption for a large enough sample size is not met (there are not at least 10 cases in each exposure/outcome category). However, condensing sleep and/or race categories further would not prohibit valuable comparison across these categories
+
+table1(~ factor(sleep_time_cat) + factor(age_cat) + factor(sex_cat) + factor(race_cat) | cognitive_decline_binary, data=BRFSS_ex)
+```
+## Reformat Table 1 and create Figure 1
+```{r}
+#Table 1
+label(BRFSS_ex$age_cat)<-"Age group (years)"
+label(BRFSS_ex$sex_cat)<-"Sex"
+label(BRFSS_ex$race_cat)<-"Race"
+label(BRFSS_ex$sleep_time_cat)<-"Sleep duration (hours"
+label(BRFSS_ex$cognitive_decline_binary)<-"Cognitive decline"
+
+table1(~ sleep_time_cat + age_cat + sex_cat + race_cat | cognitive_decline_binary, overall="Total", rowlabelhead="Variable", BRFSS_ex)
+
+#Figure 1
+grViz("digraph flowchart {
+
+      node [fontname = Helvetica, shape = rectangle, fontsize=10] 
+      tab1 [label = '@@1'] # starting
+      tab2 [label = '@@2'] # exclusion 1
+      tab3 [label = '@@3'] # exclusion 2
+      
+      tab1 -> tab2 -> tab3
+}
+
+      [1]: 'Total BRFSS 2020 surveys n=401,958'
+      [2]: 'Excluding 334,120 individuals who did not participate in Cognitive Decline module n=67,838'
+      [3]: 'Excluding 2,411 individuals with missing data on variables used in the analysis n=65,427'
+      ")
+```
+
+## Model 1: Univariate (unadjusted) logistic model with cognitive decline as the outcome and sleep time as the exposure
+```{r}
+# Univariate model, with cognitive decline as the  outcome and sleep time as the exposure
+unadjusted_model <- glm(cognitive_decline_binary ~ sleep_time_cat, data=BRFSS_ex, family="binomial") 
+summary(unadjusted_model)
+
+# Exponated coefficients
+exp(unadjusted_model$coefficients)
+exp(confint(unadjusted_model))
+
+# Odds Ratios and additional information
+odds.n.ends(unadjusted_model) 
+##NOTE: This model has 0 sensitivity (does not correctly classify any true positives) and 1 specificity (correctly categorizes all true negatives). All ORs significant.
+```
+
+## Model 2: Model with cognitive decline as the outcome and sleep time as the exposure, adjusted for age, race, and sex
+```{r}
+
+# Model with cognitive decline as the  outcome and sleep time as the exposure, adjusted for age, race, and sex
+adjusted_model <- glm(cognitive_decline_binary ~ sleep_time_cat + age_cat + race_cat + sex_cat, data=BRFSS_ex, family="binomial") 
+summary(adjusted_model)
+
+# Exponated coefficients
+exp(adjusted_model$coefficients)
+exp(confint(adjusted_model))
+
+# Odds Ratios and additional information
+odds.n.ends(adjusted_model) 
+
+# Compare unadjusted model to adjusted model
+compareCoefs(unadjusted_model, adjusted_model)
+lrtest(unadjusted_model, adjusted_model)
+## NOTE: This model has 0 sensitivity (does not correctly classify any true positives) and 1 specificity (correctly categorizes all true negatives). All ORs re: sleep time and cognitive decline are still significant.
+
+# Hosmer lemeshow goodness of fit test (a significant p value indicates a bad fit)
+blr_test_hosmer_lemeshow(adjusted_model)
+```
+
+## Check for effect modification
+### By age
+```{r}
+# Testing interaction term for sleep time*age, while controlling for other covariates)
+age_interm_model <-glm (cognitive_decline_binary ~ sleep_time_cat + age_cat + race_cat + sex_cat + sleep_time_cat*age_cat, data=BRFSS_ex, family="binomial") 
+summary(age_interm_model)
+
+# Exponated coefficients
+exp(age_interm_model$coefficients)
+exp(confint(age_interm_model))
+
+# Odds Ratios and additional information
+odds.n.ends(age_interm_model)
+
+# Test hypothesis (age modifies the association between sleep time and cognitive decline) with LRT
+lrtest(adjusted_model, age_interm_model)
+## NOTE: the interaction term is significant, stratify analyses by age groups
+```
+
+### By race
+```{r}
+# Testing interaction term for sleep time*race while controlling for other covariates)
+race_interm_model <-glm (cognitive_decline_binary ~ sleep_time_cat + age_cat + race_cat + sex_cat + sleep_time_cat*race_cat, data=BRFSS_ex, family="binomial") 
+summary(race_interm_model)
+
+# Exponated coefficients
+exp(race_interm_model$coefficients)
+exp(confint(race_interm_model))
+
+# Odds Ratios and additional information
+odds.n.ends(race_interm_model)
+
+# Test hypothesis (age modifies the association between sleep time and cognitive decline) with LRT
+lrtest(adjusted_model, race_interm_model)
+## NOTE: the interaction term is not significant, adjust for race (do not stratify)
+```
+
+### By sex
+```{r}
+# Testing interaction term for sleep time*sex while controlling for other covariates)
+sex_interm_model <- glm(cognitive_decline_binary ~ sleep_time_cat + age_cat + race_cat + sex_cat + sleep_time_cat*sex_cat, data=BRFSS_ex, family="binomial") 
+summary(sex_interm_model)
+
+# Exponated coefficients
+exp(sex_interm_model$coefficients)
+exp(confint(sex_interm_model))
+
+# Odds Ratios and additional information
+odds.n.ends(sex_interm_model)
+
+#test hypothesis (age modifies the association between sleep time and cognitive decline) with LRT
+lrtest(adjusted_model, sex_interm_model)
+## NOTE: the interaction term is not significant, adjust for sex (do not stratify)
+```
+
+## Model 3: Model with cognitive decline as the outcome and sleep time as the exposure, adjusted for race and sex
+```{r}
+# This was created just in case it would be helpful to compare an adjusted model (after determining age is NOT a confounder) to an unadjusted model, when NOT stratifying by age
+
+# Model with cognitive decline as the outcome and sleep time as the exposure, adjusted for race and sex (not age, as age is a modifier not a confounder)
+adj_sex_race_model <- glm(cognitive_decline_binary ~ sleep_time_cat + race_cat + sex_cat, data=BRFSS_ex, family="binomial") 
+summary(adj_sex_race_model)
+
+# Exponated coefficients
+exp(adj_sex_race_model$coefficients)
+exp(confint(adj_sex_race_model))
+
+# Odds Ratios and additional information
+odds.n.ends(adj_sex_race_model) 
+
+# Compare unadjusted model to newly adjusted model
+compareCoefs(unadjusted_model, adj_sex_race_model)
+lrtest(unadjusted_model, adj_sex_race_model)
+```
+## Create stratified datasets (BRFSS_ex stratified byt age group)
+```{r}
+BRFSS_ex_45_64 <- subset(BRFSS_ex, age_cat == "45-64")
+  summary(BRFSS_ex_45_64)
+BRFSS_ex_65_80 <- subset(BRFSS_ex, age_cat == "65-≥80")
+  summary(BRFSS_ex_65_80)
+```
+
+
+## Model 4: Univariate (unadjusted) model for 45-64 age group
+```{r}
+# Made for comparison purposes (i.e. to compare to adjusted model for 45-64 age group)
+
+# Univariate model, 
+unadjusted_model_45_64 <-glm (cognitive_decline_binary ~ sleep_time_cat, BRFSS_ex_45_64, family="binomial") 
+summary(unadjusted_model_45_64)
+
+# Exponated coefficients
+exp(unadjusted_model_45_64$coefficients)
+exp(confint(unadjusted_model_45_64))
+
+# Odds Ratios and additional information
+odds.n.ends(unadjusted_model_45_64) 
+
+# Hosmer lemeshow goodness of fit test (a significant p value indicates a bad fit)
+blr_test_hosmer_lemeshow(unadjusted_model_45_64)
+```
+
+## Model 5: Univariate (unadjusted) model for 65-≥80 age group
+```{r}
+# Made for comparison purposes (i.e. to compare to adjusted model for 65-≥80 age group)
+
+# Univariate model, 
+unadjusted_model_65_80 <-glm (cognitive_decline_binary ~ sleep_time_cat, BRFSS_ex_65_80, family="binomial") 
+summary(unadjusted_model_65_80)
+
+# Exponated coefficients
+exp(unadjusted_model_65_80$coefficients)
+exp(confint(unadjusted_model_65_80))
+
+# Odds Ratios and additional information
+odds.n.ends(unadjusted_model_65_80)
+
+# Hosmer lemeshow goodness of fit test (a significant p value indicates a bad fit)
+blr_test_hosmer_lemeshow(unadjusted_model_65_80)
+```
+
+## Model 6: Adjusted model for 45-64 age group
+```{r}
+# Model with cognitive decline as the outcome and sleep time as the exposure, adjusted for race and sex (45-64 age group)
+model_45_64 <- glm(cognitive_decline_binary ~ sleep_time_cat + race_cat + sex_cat, BRFSS_ex_45_64, family = "binomial") 
+summary(model_45_64)
+
+# Exponated coefficients
+exp(model_45_64$coefficients)
+exp(confint(model_45_64))
+
+# Odds Ratios and additional information
+odds.n.ends(model_45_64)
+
+# Compare unadjusted stratified model to adjusted stratified model
+compareCoefs(unadjusted_model_45_64, model_45_64)
+lrtest(unadjusted_model_45_64, model_45_64)
+
+# Hosmer lemeshow goodness of fit test (a significant p value indicates a bad fit)
+blr_test_hosmer_lemeshow(model_45_64)
+```
+
+## Model 7: Adjusted model for 65-≥80 age group
+```{r}
+# Model with cognitive decline as the outcome and sleep time as the exposure, adjusted for race and sex (65-≥80 age group)
+model_65_80 <- glm(cognitive_decline_binary ~ sleep_time_cat + race_cat + sex_cat, BRFSS_ex_65_80, family = "binomial") 
+summary(model_65_80)
+
+# Exponated coefficients
+exp(model_65_80$coefficients)
+exp(confint(model_65_80))
+
+# Odds Ratios and additional information
+odds.n.ends(model_65_80) 
+
+# Compare unadjusted stratified model to adjusted stratified model
+compareCoefs(unadjusted_model_65_80, model_65_80)
+lrtest(unadjusted_model_65_80, model_65_80)
+
+# Hosmer lemeshow goodness of fit test (a significant p value indicates a bad fit)
+blr_test_hosmer_lemeshow(model_65_80)
+
+# Hosmer lemeshow goodness of fit test (a significant p value indicates a bad fit)
+blr_test_hosmer_lemeshow(model_65_80)
+```
+
+## Tests for multicolliniarity for stratified adjusted models
+```{r}
+# Test for multicolliniarity for adjusted model for 45-64 age group
+vif(model_45_64)
+
+# Test for multicolliniarity for adjusted model for 65-≥80 age group
+vif(model_65_80)
+```
+
+## Influential data points
+### Test for influential data points for stratified adjusted models
+```{r}
+# Influential data points for adjusted model for 45-64 age group
+
+## Plot Cook's Distance
+plot(model_45_64, which = 4, id.n = 3, col="red")
+
+## Cook's D calculations for each observation, plus other stats
+model_45_64.data <- augment(model_45_64) %>%  
+  mutate(index = 1:n())
+
+head(model_45_64.data)
+
+# Influential data points for adjusted model for 65-≥80 age group
+
+## Plot Cook's Distance
+plot(model_65_80, which = 4, id.n = 3, col="red")
+
+## Cook's D calculations for each observation, plus other stats
+model_65_80.data <- augment(model_65_80) %>%  
+  mutate(index = 1:n())
+
+head(model_65_80.data)
+```
+
+### Identify and remove influential data points
+```{r}
+# Identify and remove influential data points for adjusted model for 45-64 age group
+## Define cutoff variable
+cuttoff <- mean(model_45_64.data $.cooksd)*3
+
+## Exclude observations
+BRFSS_out_45_64 <- model_45_64.data  %>% # Exclude observations
+  filter(.cooksd<cuttoff)
+
+## Check percent kept
+nrow(BRFSS_out_45_64)/nrow(BRFSS_ex_45_64)
+
+# Identify and remove influential data points for adjusted model for 65-≥80 age group
+## Define cutoff variable
+cuttoff <- mean(model_65_80.data$.cooksd)*3
+
+## Exclude observations
+BRFSS_out_65_80 <- model_65_80.data %>% # Exclude observations
+  filter(.cooksd<cuttoff)
+
+## Check percent kept
+nrow(BRFSS_out_65_80)/nrow(BRFSS_ex_65_80)
+
+```
+
+### Stratified adjusted model with influential data points excluded
+```{r}
+# Stratified adjusted model for adjusted model for 45-64 age group, influential data points removed
+model_45_64_drop <- glm(cognitive_decline_binary ~ sleep_time_cat + race_cat + sex_cat, BRFSS_out_45_64, family = "binomial") 
+summary(model_45_64_drop)
+
+# Stratified adjusted model for adjusted model for 64-≥80 age group, influential data points removed
+model_65_80_drop <- glm(cognitive_decline_binary ~ sleep_time_cat + race_cat + sex_cat, BRFSS_out_65_80, family = "binomial") 
+summary(model_65_80_drop)
+```
+
+### Compare coefficients between models with and without influential observations
+```{r}
+#45-64
+compareCoefs(model_65_80, model_65_80_drop) 
+
+# 65-80
+compareCoefs(model_45_64, model_45_64_drop)
+
+## NOTE: Dropping influential data points results in complete separation and does some very weird things to both models! #Basically, I think it dropped everyone with cognitive decline, therefore, the model was able to predict *perfectly* (for the remaining observations)
+```
+
+### Check variables by cognitive_decline_binary
+```{r}
+#45-64
+table(BRFSS_out_45_64$sleep_time_cat, BRFSS_out_45_64$cognitive_decline_binary)
+
+# 65-80
+table(BRFSS_out_65_80$sleep_time_cat, BRFSS_out_65_80$cognitive_decline_binary)
+
+## NOTE: Removing all influential data points did, in fact, remove everyone who reported cognitive decline! Therefore, influential data points should not be removed.
+```
+```
+
+
+
